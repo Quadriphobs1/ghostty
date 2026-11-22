@@ -58,7 +58,7 @@ extension TerminalRestorable {
 
 /// The state stored for terminal window restoration.
 final class TerminalRestorableState: TerminalRestorable {
-    static var version: Int { 7 }
+    static var version: Int { 8 }
     static var minimumVersion: Int { 5 }
 
     var focusedSurface: String? {
@@ -75,6 +75,9 @@ final class TerminalRestorableState: TerminalRestorable {
     }
     var titleOverride: String? {
         internalState.titleOverride
+    }
+    var isPinned: Bool {
+        internalState.isPinned ?? false
     }
 
     /// Internal State we use to perform unit tests
@@ -170,6 +173,12 @@ class TerminalWindowRestoration: NSObject, NSWindowRestoration {
 
         // Restore the tab title override
         c.titleOverride = state.titleOverride
+
+        // Restore the pinned state. AppKit restores the tab order itself, which
+        // already has pinned tabs first.
+        if state.isPinned {
+            (window as? TerminalWindow)?.isPinned = true
+        }
 
         // Setup our restored state on the controller
         // Find the focused surface in surfaceTree

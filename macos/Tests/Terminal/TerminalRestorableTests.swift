@@ -6,7 +6,7 @@ import AppKit
 struct TerminalRestorableTests {
     @Test
     func areYouForgettingToAddMigrationTests() {
-        #expect(TerminalRestorableState.version == 7)
+        #expect(TerminalRestorableState.version == 8)
         #expect(TerminalRestorableState.minimumVersion == 5)
 
         #expect(QuickTerminalRestorableState.version == 1)
@@ -58,6 +58,7 @@ struct TerminalRestorableTests {
         #expect(v5.effectiveFullscreenMode == nil)
         #expect(v5.tabColor == nil)
         #expect(v5.titleOverride == nil)
+        #expect(v5.isPinned == nil)
         #expect(v5.surfaceTree.contains(where: { $0.id.uuidString == "926F3F2A-824C-40C9-87CA-2CDCA4E11049" }))
         #expect(v5.surfaceTree.contains(where: { $0.id.uuidString == "AC5E829B-85FD-4C69-B196-2EE469C72A90" }))
 
@@ -81,6 +82,7 @@ struct TerminalRestorableTests {
         #expect(v7.effectiveFullscreenMode == .native)
         #expect(v7.tabColor == .green)
         #expect(v7.titleOverride == "1.3.0")
+        #expect(v7.isPinned == nil)
         #expect(v7.surfaceTree.contains(where: { $0.id.uuidString == "5D580A7A-81EA-47C6-BB9A-AD4B1783E478" }))
         #expect(v7.surfaceTree.contains(where: { $0.id.uuidString == "96EA1189-7482-41BC-A6CD-26E5190E4BFA" }))
 
@@ -106,8 +108,39 @@ struct TerminalRestorableTests {
         #expect(v7Generic.effectiveFullscreenMode == .native)
         #expect(v7Generic.tabColor == .green)
         #expect(v7Generic.titleOverride == "tip")
+        #expect(v7Generic.isPinned == nil)
         #expect(v7Generic.surfaceTree.contains(where: { $0.id.uuidString == "953CE952-D91D-4D36-AC72-9D0F1F6BCE73" }))
         #expect(v7Generic.surfaceTree.contains(where: { $0.id.uuidString == "D3223569-2E01-4BC5-9DB2-DBFC3AFF46D1" }))
+    }
+
+    @MainActor
+    @Test func restoreTerminal8() throws {
+//        let tree = try SplitTreeTests.makeHorizontalSplit()
+//        let state = DummyTerminalRestorableState(
+//            .init(
+//                focusedSurface: "v8",
+//                surfaceTree: tree.0,
+//                effectiveFullscreenMode: .native,
+//                tabColor: .green,
+//                titleOverride: "pinned",
+//                isPinned: true
+//            )
+//        )
+//        let data = try archive(CodableBridge(state), className: "CodableBridge<Terminal>")
+//        print(data.base64EncodedString())
+//        print()
+//        print(tree.1.id)
+//        print(tree.2.id)
+
+        let v8 = try unarchive(v8Data, className: "CodableBridge<Terminal>", as: CodableBridge<DummyTerminalRestorableState>.self)
+            .value.internalState
+        #expect(v8.focusedSurface == "v8")
+        #expect(v8.effectiveFullscreenMode == .native)
+        #expect(v8.tabColor == .green)
+        #expect(v8.titleOverride == "pinned")
+        #expect(v8.isPinned == true)
+        #expect(v8.surfaceTree.contains(where: { $0.id.uuidString == "1C555E1F-A0A2-49EF-AD5D-997547F459BE" }))
+        #expect(v8.surfaceTree.contains(where: { $0.id.uuidString == "12D4D535-4D3B-4F51-86AE-49C88AC4F707" }))
     }
 }
 
@@ -212,4 +245,10 @@ private let v7Data = Data(base64Encoded: """
 
 private let v7GenericData = Data(base64Encoded: """
     YnBsaXN0MDDUAQIDBAUGBwpYJHZlcnNpb25ZJGFyY2hpdmVyVCR0b3BYJG9iamVjdHMSAAGGoF8QD05TS2V5ZWRBcmNoaXZlctEICVRyb290gAGkCwwRElUkbnVsbNINDg8QVGRhdGFWJGNsYXNzgAKAA08RA8NicGxpc3QwMNQBAgMEBQYHClgkdmVyc2lvblkkYXJjaGl2ZXJUJHRvcFgkb2JqZWN0cxIAAYagXxAPTlNLZXllZEFyY2hpdmVy0QgJVXZhbHVlgAGvECMLDB0eHyAhIiMkLC0uLzU2QkNERUZMTVNUVVxdY2lqcHF1dlUkbnVsbNMNDg8QFhxXTlMua2V5c1pOUy5vYmplY3RzViRjbGFzc6UREhMUFYACgAOABIAFgAalFxgZGhuAB4AIgAmAIYAigBlfEBdlZmZlY3RpdmVGdWxsc2NyZWVuTW9kZV5mb2N1c2VkU3VyZmFjZVtzdXJmYWNlVHJlZVh0YWJDb2xvcl10aXRsZU92ZXJyaWRlVm5hdGl2ZVp2NyBnZW5lcmlj0w0ODyUoHKImJ4AKgAuiKSqADIANgBlXdmVyc2lvblRyb290EAHTDQ4PMDIcoTGADqEzgA+AGVVzcGxpdNMNDg83PBykODk6O4AQgBGAEoATpD0+P0CAFIAagBuAHoAZVXJpZ2h0VXJhdGlvVGxlZnRZZGlyZWN0aW9u0w0OD0dJHKFIgBWhSoAWgBlUdmlld9MNDg9OUByhT4AXoVGAGIAZUmlkXxAkRDMyMjM1NjktMkUwMS00QkM1LTlEQjItREJGQzNBRkY0NkQx0lZXWFlaJGNsYXNzbmFtZVgkY2xhc3Nlc18QE05TTXV0YWJsZURpY3Rpb25hcnmjWFpbXE5TRGljdGlvbmFyeVhOU09iamVjdCM/4AAAAAAAANMNDg9eYByhSIAVoWGAHIAZ0w0OD2RmHKFPgBehZ4AdgBlfECQ5NTNDRTk1Mi1EOTFELTREMzYtQUM3Mi05RDBGMUY2QkNFNzPTDQ4Pa20coWyAH6FugCCAGVpob3Jpem9udGFs0w0OD3JzHKCggBkQB1N0aXAACAARABoAJAApADIANwBJAEwAUgBUAHoAgACHAI8AmgChAKcAqQCrAK0ArwCxALcAuQC7AL0AvwDBAMMA3QDsAPgBAQEPARYBIQEoASsBLQEvATIBNAE2ATgBQAFFAUcBTgFQAVIBVAFWAVgBXgFlAWoBbAFuAXABcgF3AXkBewF9AX8BgQGHAY0BkgGcAaMBpQGnAakBqwGtAbIBuQG7Ab0BvwHBAcMBxgHtAfIB/QIGAhwCIAItAjYCPwJGAkgCSgJMAk4CUAJXAlkCWwJdAl8CYQKIAo8CkQKTApUClwKZAqQCqwKsAq0CrwKxAAAAAAAAAgEAAAAAAAAAdwAAAAAAAAAAAAAAAAAAArXRExRaJGNsYXNzbmFtZV8QF0NvZGFibGVCcmlkZ2U8VGVybWluYWw+AAgAEQAaACQAKQAyADcASQBMAFEAUwBYAF4AYwBoAG8AcQBzBDoEPQRIAAAAAAAAAgEAAAAAAAAAFQAAAAAAAAAAAAAAAAAABGI=
+    """)!
+
+// MARK: - Terminal V8 (pinned tabs)
+
+private let v8Data = Data(base64Encoded: """
+    YnBsaXN0MDDUAQIDBAUGBwpYJHZlcnNpb25ZJGFyY2hpdmVyVCR0b3BYJG9iamVjdHMSAAGGoF8QD05TS2V5ZWRBcmNoaXZlctEICVRyb290gAGkCwwRElUkbnVsbNINDg8QVGRhdGFWJGNsYXNzgAKAA08RA9hicGxpc3QwMNQBAgMEBQYHClgkdmVyc2lvblkkYXJjaGl2ZXJUJHRvcFgkb2JqZWN0cxIAAYagXxAPTlNLZXllZEFyY2hpdmVy0QgJVXZhbHVlgAGvECULDB8gISIjJCUmJy8wMTI4OUVGR0hJT1BWV1hfYGZsbXN0eHl6VSRudWxs0w0ODxAXHldOUy5rZXlzWk5TLm9iamVjdHNWJGNsYXNzphESExQVFoACgAOABIAFgAaAB6YYGRobHB2ACIAJgAqAIoAjgCSAGl8QF2VmZmVjdGl2ZUZ1bGxzY3JlZW5Nb2RlXmZvY3VzZWRTdXJmYWNlW3N1cmZhY2VUcmVlWHRhYkNvbG9yXXRpdGxlT3ZlcnJpZGVYaXNQaW5uZWRWbmF0aXZlUnY40w0ODygrHqIpKoALgAyiLC2ADYAOgBpXdmVyc2lvblRyb290EAHTDQ4PMzUeoTSAD6E2gBCAGlVzcGxpdNMNDg86Px6kOzw9PoARgBKAE4AUpEBBQkOAFYAbgByAH4AaVXJpZ2h0VXJhdGlvVGxlZnRZZGlyZWN0aW9u0w0OD0pMHqFLgBahTYAXgBpUdmlld9MNDg9RUx6hUoAYoVSAGYAaUmlkXxAkMTJENEQ1MzUtNEQzQi00RjUxLTg2QUUtNDlDODhBQzRGNzA30llaW1xaJGNsYXNzbmFtZVgkY2xhc3Nlc18QE05TTXV0YWJsZURpY3Rpb25hcnmjW11eXE5TRGljdGlvbmFyeVhOU09iamVjdCM/4AAAAAAAANMNDg9hYx6hS4AWoWSAHYAa0w0OD2dpHqFSgBihaoAegBpfECQxQzU1NUUxRi1BMEEyLTQ5RUYtQUQ1RC05OTc1NDdGNDU5QkXTDQ4PbnAeoW+AIKFxgCGAGlpob3Jpem9udGFs0w0OD3V2HqCggBoQB1ZwaW5uZWQJAAgAEQAaACQAKQAyADcASQBMAFIAVAB8AIIAiQCRAJwAowCqAKwArgCwALIAtAC2AL0AvwDBAMMAxQDHAMkAywDlAPQBAAEJARcBIAEnASoBMQE0ATYBOAE7AT0BPwFBAUkBTgFQAVcBWQFbAV0BXwFhAWcBbgFzAXUBdwF5AXsBgAGCAYQBhgGIAYoBkAGWAZsBpQGsAa4BsAGyAbQBtgG7AcIBxAHGAcgBygHMAc8B9gH7AgYCDwIlAikCNgI/AkgCTwJRAlMCVQJXAlkCYAJiAmQCZgJoAmoCkQKYApoCnAKeAqACogKtArQCtQK2ArgCugLBAAAAAAAAAgEAAAAAAAAAewAAAAAAAAAAAAAAAAAAAsLRExRaJGNsYXNzbmFtZV8QF0NvZGFibGVCcmlkZ2U8VGVybWluYWw+AAgAEQAaACQAKQAyADcASQBMAFEAUwBYAF4AYwBoAG8AcQBzBE8EUgRdAAAAAAAAAgEAAAAAAAAAFQAAAAAAAAAAAAAAAAAABHc=
     """)!

@@ -585,6 +585,9 @@ pub const Action = union(enum) {
     /// the first tab in the list. Likewise, `move_tab:-1` moves the tab one
     /// position backwards, and if it was the first tab, then it will become
     /// the last tab.
+    ///
+    /// Pinned tabs (see `toggle_tab_pin`) only move among other pinned tabs
+    /// and unpinned tabs only move among other unpinned tabs.
     move_tab: isize,
 
     /// Move a tab to a new window.
@@ -596,6 +599,20 @@ pub const Action = union(enum) {
     /// version is 1.4 or newer. The current libadwaita version can be
     /// found by running `ghostty +version`.
     toggle_tab_overview,
+
+    /// Toggle whether the current tab is pinned.
+    ///
+    /// Pinned tabs are always kept before all unpinned tabs in the tab bar
+    /// and can only be moved (with `move_tab` or by dragging) among other
+    /// pinned tabs. Pinned tabs are not closed by `close_tab:other` or
+    /// `close_tab:right`. Closing a pinned tab explicitly (for example with
+    /// `close_tab` or the tab's close button) always asks for confirmation,
+    /// regardless of `confirm-close-surface`. A pinned tab whose last
+    /// terminal exits on its own closes without confirmation.
+    ///
+    /// On macOS, pinned tabs are marked with a pin icon but otherwise keep
+    /// their normal size since the native tab bar has no compact mode.
+    toggle_tab_pin,
 
     /// Change the title of the current focused surface via a pop-up prompt.
     prompt_surface_title,
@@ -1476,6 +1493,7 @@ pub const Action = union(enum) {
             .move_tab,
             .move_tab_to_new_window,
             .toggle_tab_overview,
+            .toggle_tab_pin,
             .new_split,
             .goto_split,
             .goto_window,
@@ -3387,6 +3405,24 @@ test "parse: action no parameters" {
         try parseSingle("a=ignore"),
     );
     try testing.expectError(Error.InvalidFormat, parseSingle("a=ignore:A"));
+}
+
+test "parse: toggle_tab_pin" {
+    const testing = std.testing;
+
+    try testing.expectEqual(
+        Binding{
+            .trigger = .{ .key = .{ .unicode = 'a' } },
+            .action = .toggle_tab_pin,
+        },
+        try parseSingle("a=toggle_tab_pin"),
+    );
+
+    // It takes no parameters
+    try testing.expectError(Error.InvalidFormat, parseSingle("a=toggle_tab_pin:true"));
+
+    // It is a surface-scoped action since it targets the surface's tab
+    try testing.expectEqual(Action.Scope.surface, (Action{ .toggle_tab_pin = {} }).scope());
 }
 
 test "parse: action with string" {

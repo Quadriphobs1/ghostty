@@ -292,6 +292,10 @@ pub const Window = extern struct {
         /// setup by `setup-menu`.
         context_menu_page: ?*adw.TabPage = null,
 
+        /// Set while a tab closes itself because its last surface closed
+        /// (see `tabCloseRequest`) so the pinned-tab confirmation is skipped.
+        force_close_page: ?*adw.TabPage = null,
+
         /// The manually overridden title.
         title_override: ?[:0]const u8 = null,
 
@@ -361,6 +365,15 @@ pub const Window = extern struct {
         // because its dependent on the build config.
         self.as(gtk.Window).setIconName(build_config.bundle_id);
 
+        // Pinned tabs are shown icon-only in the tab bar. Our tabs don't
+        // set their own icon, so provide a sensible default instead of
+        // libadwaita's "missing icon" placeholder.
+        {
+            const icon = gio.ThemedIcon.new(build_config.bundle_id);
+            defer icon.unref();
+            priv.tab_view.setDefaultIcon(icon.as(gio.Icon));
+        }
+
         // Initialize our actions
         self.initActionMap();
 
@@ -402,6 +415,12 @@ pub const Window = extern struct {
             .init("prompt-tab-title", actionPromptTabTitle, null),
             .init("prompt-context-tab-title", actionPromptContextTabTitle, null),
             .init("prompt-context-tab-color", actionPromptContextTabColor, null),
+            .initStateful(
+                "toggle-context-tab-pin",
+                actionToggleContextTabPin,
+                null,
+                glib.Variant.newBoolean(@intFromBool(false)),
+            ),
             .init("prompt-window-title", actionPromptWindowTitle, null),
             .init("ring-bell", actionRingBell, null),
             .init("split-right", actionSplitRight, null),
@@ -597,21 +616,53 @@ pub const Window = extern struct {
         const page = tab_view.getPage(tab.as(gtk.Widget));
         const pos = tab_view.getPagePosition(page);
 
-        // Move it
-        const desired_pos: c_int = desired: {
-            const initial: c_int = @intCast(pos + amount);
-            const max = total - 1;
-            break :desired if (initial < 0)
-                max + initial + 1
-            else if (initial > max)
-                initial - max - 1
-            else
-                initial;
-        };
-        assert(desired_pos >= 0);
-        assert(desired_pos < total);
+        // Pinned pages must stay before all unpinned pages (libadwaita
+        // considers reordering across that boundary a programmer error), so
+        // we wrap cyclically within the page's own section.
+        const n_pinned = tab_view.getNPinnedPages();
+        const start: c_int, const len: c_int = if (page.getPinned() != 0)
+            .{ 0, n_pinned }
+        else
+            .{ n_pinned, total - n_pinned };
+        if (len <= 1) return false;
 
+        // Move it
+        const desired_pos = wrapInSection(pos, amount, start, len);
         return tab_view.reorderPage(page, desired_pos) != 0;
+    }
+
+    /// Returns the position that `pos` moves to when moved by `amount`,
+    /// wrapping cyclically within the section `[start, start + len)`.
+    fn wrapInSection(pos: c_int, amount: isize, start: c_int, len: c_int) c_int {
+        assert(len > 0);
+        assert(pos >= start and pos < start + len);
+
+        // Reduce the amount first so huge values can't overflow.
+        const len_: isize = len;
+        const rel = @mod(@as(isize, pos - start) + @mod(amount, len_), len_);
+        return start + @as(c_int, @intCast(rel));
+    }
+
+    test wrapInSection {
+        const testing = std.testing;
+
+        // Unpinned section [2, 5) with 2 pinned tabs before it.
+        try testing.expectEqual(3, wrapInSection(2, 1, 2, 3));
+        try testing.expectEqual(4, wrapInSection(2, -1, 2, 3)); // wraps to end of section
+        try testing.expectEqual(2, wrapInSection(4, 1, 2, 3)); // wraps to start of section
+        try testing.expectEqual(3, wrapInSection(3, 0, 2, 3));
+        try testing.expectEqual(3, wrapInSection(2, 7, 2, 3)); // multiple wraps
+        try testing.expectEqual(4, wrapInSection(2, -7, 2, 3));
+
+        // Pinned section [0, 2).
+        try testing.expectEqual(1, wrapInSection(0, 1, 0, 2));
+        try testing.expectEqual(0, wrapInSection(1, 1, 0, 2));
+        try testing.expectEqual(1, wrapInSection(0, -1, 0, 2));
+
+        // Huge amounts don't overflow. maxInt(isize) = 2^63 - 1 which is
+        // 1 (mod 3), and minInt(isize) = -2^63 which is 1 (mod 3).
+        try testing.expectEqual(2, wrapInSection(4, std.math.maxInt(isize), 2, 3));
+        try testing.expectEqual(3, wrapInSection(2, std.math.minInt(isize), 2, 3));
     }
 
     pub fn moveTabToNewWindow(self: *Self, surface: *Surface) bool {
@@ -634,6 +685,21 @@ pub const Window = extern struct {
             0,
         );
         window.as(gtk.Window).present();
+        return true;
+    }
+
+    /// Toggle the pinned state of the tab containing the given surface.
+    /// libadwaita keeps pinned pages before all unpinned pages and shows them
+    /// compactly. Skipping pinned pages for `close_tab:other`/`close_tab:right`
+    /// is handled in `Tab`.
+    pub fn toggleTabPin(self: *Self, surface: *Surface) bool {
+        const tab_view = self.private().tab_view;
+        const tab = ext.getAncestor(
+            Tab,
+            surface.as(gtk.Widget),
+        ) orelse return false;
+        const page = tab_view.getPage(tab.as(gtk.Widget));
+        tab_view.setPagePinned(page, @intFromBool(page.getPinned() == 0));
         return true;
     }
 
@@ -1670,15 +1736,19 @@ pub const Window = extern struct {
         const tab = gobject.ext.cast(Tab, child) orelse
             return @intFromBool(false);
 
+        // Pinned tabs always require confirmation to close, unless the tab
+        // is closing itself because its last surface already closed.
+        const pinned = page.getPinned() != 0 and priv.force_close_page != page;
+
         // If the tab says it doesn't need confirmation then we go ahead
         // and close immediately.
-        if (!tab.getNeedsConfirmQuit()) {
+        if (!pinned and !tab.getNeedsConfirmQuit()) {
             priv.tab_view.closePageFinish(page, @intFromBool(true));
             return @intFromBool(true);
         }
 
         // Show a confirmation dialog
-        const dialog: *CloseConfirmationDialog = .new(.tab);
+        const dialog: *CloseConfirmationDialog = .new(if (pinned) .pinned_tab else .tab);
         _ = CloseConfirmationDialog.signals.@"close-request".connect(
             dialog,
             *adw.TabPage,
@@ -1840,6 +1910,12 @@ pub const Window = extern struct {
         const priv = self.private();
         const page = priv.tab_view.getPage(tab.as(gtk.Widget));
         // TODO: connect close page handler to tab to check for confirmation
+
+        // The tab has no surfaces left, so there is nothing to confirm even
+        // if it is pinned. close-page is emitted synchronously so this flag
+        // only applies to this call.
+        priv.force_close_page = page;
+        defer priv.force_close_page = null;
         priv.tab_view.closePage(page);
     }
 
@@ -1867,6 +1943,19 @@ pub const Window = extern struct {
         self: *Self,
     ) callconv(.c) void {
         self.private().context_menu_page = page;
+
+        // Sync the pin checkbox in the context menu with the page that
+        // the menu is being opened for.
+        const page_ = page orelse return;
+        const action_map: *gio.ActionMap = gobject.ext.cast(
+            gio.ActionMap,
+            self,
+        ) orelse return;
+        const action: *gio.SimpleAction = gobject.ext.cast(
+            gio.SimpleAction,
+            action_map.lookupAction("toggle-context-tab-pin") orelse return,
+        ) orelse return;
+        action.setState(glib.Variant.newBoolean(page_.getPinned()));
     }
 
     fn surfaceClipboardWrite(
@@ -2121,6 +2210,18 @@ pub const Window = extern struct {
     fn promptTabColor(_: *Self, tab: *Tab) void {
         const dialog = TabColorDialog.new(tab);
         dialog.present(tab.as(gtk.Widget));
+    }
+
+    fn actionToggleContextTabPin(
+        action: *gio.SimpleAction,
+        _: ?*glib.Variant,
+        self: *Self,
+    ) callconv(.c) void {
+        const priv = self.private();
+        const page = priv.context_menu_page orelse return;
+        const pinned = page.getPinned() == 0;
+        priv.tab_view.setPagePinned(page, @intFromBool(pinned));
+        action.setState(glib.Variant.newBoolean(@intFromBool(pinned)));
     }
 
     fn actionPromptSurfaceTitle(

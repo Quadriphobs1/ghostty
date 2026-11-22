@@ -69,6 +69,30 @@ class TerminalWindow: NSWindow {
         }
     }
 
+    /// Whether this window's tab is pinned. Pinned tabs are kept before all unpinned
+    /// tabs in the tab group and are skipped when closing other tabs or tabs to the right.
+    /// The native tab bar has no API for pinning, so this is entirely managed by us.
+    var isPinned: Bool = false {
+        didSet {
+            guard isPinned != oldValue else { return }
+            pinIndicator.isHidden = !isPinned
+            invalidateRestorableState()
+            terminalController?.enforcePinnedTabOrder()
+        }
+    }
+
+    /// Pin icon shown in the tab accessory view when the tab is pinned.
+    private lazy var pinIndicator: NSImageView = {
+        let view = NSImageView()
+        view.image = NSImage(systemSymbolName: "pin.fill", accessibilityDescription: "Pinned")
+        view.symbolConfiguration = .init(pointSize: NSFont.smallSystemFontSize, weight: .regular)
+        view.contentTintColor = .secondaryLabelColor
+        view.toolTip = "Pinned Tab"
+        view.isHidden = !isPinned
+        view.setContentCompressionResistancePriority(.windowSizeStayPut, for: .horizontal)
+        return view
+    }()
+
     // MARK: NSWindow Overrides
 
     override var toolbar: NSToolbar? {
@@ -166,6 +190,7 @@ class TerminalWindow: NSWindow {
         stackView.setHuggingPriority(.defaultHigh, for: .horizontal)
         stackView.spacing = 4
         stackView.alignment = .centerY
+        stackView.addArrangedSubview(pinIndicator)
         stackView.addArrangedSubview(tabColorIndicator)
         stackView.addArrangedSubview(keyEquivalentLabel)
         stackView.addArrangedSubview(resetZoomTabButton)
@@ -763,7 +788,9 @@ private struct TabColorIndicatorView: View {
 
 extension TerminalWindow {
     private static let closeTabsOnRightMenuItemIdentifier = NSUserInterfaceItemIdentifier("com.mitchellh.ghostty.closeTabsOnTheRightMenuItem")
+    private static let closeOtherTabsMenuItemIdentifier = NSUserInterfaceItemIdentifier("com.mitchellh.ghostty.closeOtherTabsMenuItem")
     private static let changeTitleMenuItemIdentifier = NSUserInterfaceItemIdentifier("com.mitchellh.ghostty.changeTitleMenuItem")
+    private static let togglePinMenuItemIdentifier = NSUserInterfaceItemIdentifier("com.mitchellh.ghostty.togglePinMenuItem")
     private static let tabColorSeparatorIdentifier = NSUserInterfaceItemIdentifier("com.mitchellh.ghostty.tabColorSeparator")
 
     private static let tabColorPaletteIdentifier = NSUserInterfaceItemIdentifier("com.mitchellh.ghostty.tabColorPalette")
@@ -779,20 +806,33 @@ extension TerminalWindow {
             .flatMap { $0.target as? NSWindow }
             .flatMap { $0.windowController as? TerminalController }
 
+        // Close other tabs. We hide the native item (but keep it in the menu so that
+        // `isTabContextMenu` can still recognize this menu) and replace it with our own
+        // so that it goes through our implementation, which skips pinned tabs and
+        // supports close confirmation and undo.
+        let nativeCloseOtherTabs = NSSelectorFromString("performCloseOtherTabs:")
+        menu.items.first { $0.action == nativeCloseOtherTabs }?.isHidden = true
+        let closeOtherItem = NSMenuItem(title: "Close Other Tabs", action: #selector(TerminalController.closeOtherTabs(_:)), keyEquivalent: "")
+        closeOtherItem.identifier = Self.closeOtherTabsMenuItemIdentifier
+        closeOtherItem.target = targetController
+        if menu.insertItem(closeOtherItem, after: nativeCloseOtherTabs) == nil,
+           menu.insertItem(closeOtherItem, after: NSSelectorFromString("performClose:")) == nil {
+            menu.addItem(closeOtherItem)
+        }
+
         // Close tabs to the right
         let item = NSMenuItem(title: "Close Tabs to the Right", action: #selector(TerminalController.closeTabsOnTheRight(_:)), keyEquivalent: "")
         item.identifier = Self.closeTabsOnRightMenuItemIdentifier
         item.target = targetController
         item.setImageIfDesired(systemSymbolName: "xmark")
-        if menu.insertItem(item, after: NSSelectorFromString("performCloseOtherTabs:")) == nil,
-           menu.insertItem(item, after: NSSelectorFromString("performClose:")) == nil {
+        if menu.insertItem(item, after: #selector(TerminalController.closeOtherTabs(_:))) == nil {
             menu.addItem(item)
         }
 
         // Other close items should have the xmark to match Safari on macOS 26
         for menuItem in menu.items {
             if menuItem.action == NSSelectorFromString("performClose:") ||
-                menuItem.action == NSSelectorFromString("performCloseOtherTabs:") {
+                menuItem.action == #selector(TerminalController.closeOtherTabs(_:)) {
                 menuItem.setImageIfDesired(systemSymbolName: "xmark")
             }
         }
@@ -818,6 +858,7 @@ extension TerminalWindow {
     private func appendTabModifierSection(to menu: NSMenu, target: TerminalController?) {
         menu.removeItems(withIdentifiers: [
             Self.tabColorSeparatorIdentifier,
+            Self.togglePinMenuItemIdentifier,
             Self.changeTitleMenuItemIdentifier,
             Self.tabColorPaletteIdentifier
         ])
@@ -825,6 +866,17 @@ extension TerminalWindow {
         let separator = NSMenuItem.separator()
         separator.identifier = Self.tabColorSeparatorIdentifier
         menu.addItem(separator)
+
+        // Pin Tab / Unpin Tab
+        let isPinned = (target?.window as? TerminalWindow)?.isPinned ?? false
+        let pinItem = NSMenuItem(
+            title: isPinned ? "Unpin Tab" : "Pin Tab",
+            action: #selector(TerminalController.togglePinTab(_:)),
+            keyEquivalent: "")
+        pinItem.identifier = Self.togglePinMenuItemIdentifier
+        pinItem.target = target
+        pinItem.setImageIfDesired(systemSymbolName: isPinned ? "pin.slash" : "pin")
+        menu.addItem(pinItem)
 
         // Rename Tab...
         let changeTitleItem = NSMenuItem(title: "Rename Tab...", action: #selector(TerminalWindow.renameTabFromContextMenu(_:)), keyEquivalent: "")

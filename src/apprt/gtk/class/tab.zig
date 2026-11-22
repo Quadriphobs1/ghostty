@@ -457,10 +457,26 @@ pub const Tab = extern struct {
 
         // Delegate to our parent to handle this, since this will emit
         // a close-page signal that the parent can intercept.
+        //
+        // libadwaita's `closeOtherPages`/`closePagesAfter` rely on the
+        // default close-page handler to protect pinned pages, but we install
+        // our own handler. So we iterate ourselves and skip pinned pages.
+        // Explicitly closing a pinned page (`this`) is still allowed.
         switch (mode) {
             .this => tab_view.closePage(page),
-            .other => tab_view.closeOtherPages(page),
-            .right => tab_view.closePagesAfter(page),
+            .other, .right => {
+                const pos = tab_view.getPagePosition(page);
+                // Iterate backwards so closing a page doesn't shift the
+                // positions of pages we haven't visited yet.
+                var i: c_int = tab_view.getNPages() - 1;
+                while (i >= 0) : (i -= 1) {
+                    if (mode == .right and i <= pos) break;
+                    const candidate = tab_view.getNthPage(i);
+                    if (candidate == page) continue;
+                    if (candidate.getPinned() != 0) continue;
+                    tab_view.closePage(candidate);
+                }
+            },
         }
     }
 

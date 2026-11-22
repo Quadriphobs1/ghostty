@@ -453,6 +453,12 @@ fn actionCommands(action: Action.Key) []const Command {
             .description = i18n.N_("Toggle the tab overview."),
         }},
 
+        .toggle_tab_pin => comptime &.{.{
+            .action = .toggle_tab_pin,
+            .title = i18n.N_("Toggle Tab Pin"),
+            .description = i18n.N_("Pin or unpin the current tab."),
+        }},
+
         .prompt_surface_title => comptime &.{.{
             .action = .prompt_surface_title,
             .title = i18n.N_("Change Terminal Title…"),

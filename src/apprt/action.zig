@@ -367,6 +367,12 @@ pub const Action = union(Key) {
     /// Set the application window theme for this session.
     set_window_theme: WindowTheme,
 
+    /// Toggle whether the tab containing the target surface is pinned.
+    /// Pinned tabs are kept before all unpinned tabs, are skipped by
+    /// `close_tab:other` and `close_tab:right`, and require confirmation
+    /// to be closed explicitly.
+    toggle_tab_pin,
+
     /// Sync with: ghostty_action_tag_e
     pub const Key = enum(c_int) {
         quit,
@@ -440,6 +446,7 @@ pub const Action = union(Key) {
         move_tab_to_new_window,
         resize_window,
         set_window_theme,
+        toggle_tab_pin,
 
         test "ghostty.h Action.Key" {
             try lib.checkGhosttyHEnum(Key, "GHOSTTY_ACTION_");

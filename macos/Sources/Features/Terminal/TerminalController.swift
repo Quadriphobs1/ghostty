@@ -478,7 +478,16 @@ class TerminalController: BaseTerminalController, TabGroupCloseCoordinator.Contr
 
             case "current": fallthrough
             default:
-                tabCreated = parent.addTabbedWindowSafely(window, ordered: .above)
+                // New tabs are never pinned, so if the current tab is pinned we
+                // place the new tab after the last pinned tab instead.
+                var insertAfter: NSWindow = parent
+                if (parent as? TerminalWindow)?.isPinned ?? false,
+                   let lastPinned = parent.tabGroup?.windows.last(where: {
+                       ($0 as? TerminalWindow)?.isPinned ?? false
+                   }) {
+                    insertAfter = lastPinned
+                }
+                tabCreated = insertAfter.addTabbedWindowSafely(window, ordered: .above)
             }
             if tabCreated {
                 // We set the selectedWindow early here because we want the next window
@@ -520,6 +529,7 @@ class TerminalController: BaseTerminalController, TabGroupCloseCoordinator.Contr
         // is used in the tab bar. This fixes that. If we can find a more robust
         // solution we should do that.
         DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) {
+            controller.enforcePinnedTabOrder()
             controller.relabelTabs()
         }
 
@@ -639,7 +649,97 @@ class TerminalController: BaseTerminalController, TabGroupCloseCoordinator.Contr
         guard let v = self.window?.tabbedWindows?.hashValue else { return }
         guard tabWindowsHash != v else { return }
         tabWindowsHash = v
+
+        // A tab may have been dragged across the pinned/unpinned boundary.
+        self.enforcePinnedTabOrder()
         self.relabelTabs()
+    }
+
+    // MARK: Pinned Tabs
+
+    /// True while a deferred `enforcePinnedTabOrder` is scheduled.
+    private var pinnedTabOrderPending = false
+
+    /// Whether this controller's tab is pinned.
+    var isPinned: Bool {
+        (window as? TerminalWindow)?.isPinned ?? false
+    }
+
+    @IBAction func togglePinTab(_ sender: Any?) {
+        guard let window = window as? TerminalWindow else { return }
+        window.isPinned.toggle()
+    }
+
+    /// Reorders the tab group (if necessary) so that all pinned tabs come before
+    /// all unpinned tabs, preserving the relative order within each section.
+    ///
+    /// The native tab bar has no notion of pinning so we enforce this ourselves
+    /// whenever pin state changes, tabs are added, or tabs are reordered.
+    func enforcePinnedTabOrder() {
+        // If a mouse button is down the user may be dragging a tab. AppKit
+        // reorders tabs live during a drag, and removing/re-adding windows
+        // mid-drag fights with the drag session. Wait until the drag ends.
+        guard NSEvent.pressedMouseButtons == 0 else {
+            guard !pinnedTabOrderPending else { return }
+            pinnedTabOrderPending = true
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) { [weak self] in
+                guard let self else { return }
+                self.pinnedTabOrderPending = false
+                self.enforcePinnedTabOrder()
+            }
+            return
+        }
+
+        guard let tabGroup = window?.tabGroup else { return }
+        let current = tabGroup.windows
+        guard current.count > 1 else { return }
+
+        let desired = PinnedTabs.ordered(current) { ($0 as? TerminalWindow)?.isPinned ?? false }
+        guard desired != current else { return }
+
+        // We never move the selected tab. Removing the selected window from the
+        // tab group makes AppKit briefly show a neighbor and causes visual
+        // glitches with titlebar tabs on macOS 26 (see onMoveTab). Instead, we
+        // rebuild the order around the selected tab by moving the others.
+        let pivot = tabGroup.selectedWindow.flatMap { desired.contains($0) ? $0 : nil } ?? desired[0]
+        guard let pivotIndex = desired.firstIndex(of: pivot) else { return }
+
+        // Begin a group of window operations to minimize visual updates
+        NSAnimationContext.beginGrouping()
+        NSAnimationContext.current.duration = 0
+        defer { NSAnimationContext.endGrouping() }
+
+        // Place the windows that belong before the pivot, from nearest to
+        // farthest, each to the left of the previously placed one.
+        var anchor = pivot
+        for target in desired[..<pivotIndex].reversed() {
+            let windows = tabGroup.windows
+            if let anchorIndex = windows.firstIndex(of: anchor),
+               anchorIndex > 0, windows[anchorIndex - 1] == target {
+                // Already in place
+            } else {
+                tabGroup.removeWindow(target)
+                anchor.addTabbedWindowSafely(target, ordered: .below)
+            }
+            anchor = target
+        }
+
+        // Place the windows that belong after the pivot, from nearest to
+        // farthest, each to the right of the previously placed one.
+        anchor = pivot
+        for target in desired[(pivotIndex + 1)...] {
+            let windows = tabGroup.windows
+            if let anchorIndex = windows.firstIndex(of: anchor),
+               anchorIndex + 1 < windows.count, windows[anchorIndex + 1] == target {
+                // Already in place
+            } else {
+                tabGroup.removeWindow(target)
+                anchor.addTabbedWindowSafely(target, ordered: .above)
+            }
+            anchor = target
+        }
+
+        relabelTabs()
     }
 
     override func syncAppearance() {
@@ -754,10 +854,17 @@ class TerminalController: BaseTerminalController, TabGroupCloseCoordinator.Contr
         window.close()
     }
 
+    /// Tabs that `close_tab:other` should close: every unpinned tab except this one.
+    private var otherTabsToClose: [NSWindow] {
+        guard let window, let tabGroup = window.tabGroup else { return [] }
+        return tabGroup.windows.filter {
+            $0 != window && !(($0 as? TerminalWindow)?.isPinned ?? false)
+        }
+    }
+
     private func closeOtherTabsImmediately() {
-        guard let window = window else { return }
-        guard let tabGroup = window.tabGroup else { return }
-        guard tabGroup.windows.count > 1 else { return }
+        let tabsToClose = otherTabsToClose
+        guard !tabsToClose.isEmpty else { return }
 
         // Start an undo grouping
         if let undoManager {
@@ -767,8 +874,8 @@ class TerminalController: BaseTerminalController, TabGroupCloseCoordinator.Contr
             undoManager?.endUndoGrouping()
         }
 
-        // Iterate through all tabs except the current one.
-        for window in tabGroup.windows where window != self.window {
+        // Iterate through all tabs except the current one and pinned tabs.
+        for window in tabsToClose {
             // We ignore any non-terminal tabs. They don't currently exist and we can't
             // properly undo them anyways so I'd rather ignore them and get a bug report
             // later if and when we introduce non-terminal tabs.
@@ -803,12 +910,18 @@ class TerminalController: BaseTerminalController, TabGroupCloseCoordinator.Contr
         }
     }
 
-    private func closeTabsOnTheRightImmediately() {
-        guard let window = window else { return }
-        guard let tabGroup = window.tabGroup else { return }
-        guard let currentIndex = tabGroup.windows.firstIndex(of: window) else { return }
+    /// Tabs that `close_tab:right` should close: every unpinned tab to the right of this one.
+    private var tabsOnTheRightToClose: [NSWindow] {
+        guard let window, let tabGroup = window.tabGroup else { return [] }
+        guard let currentIndex = tabGroup.windows.firstIndex(of: window) else { return [] }
+        return tabGroup.windows.enumerated()
+            .filter { $0.offset > currentIndex }
+            .map(\.element)
+            .filter { !(($0 as? TerminalWindow)?.isPinned ?? false) }
+    }
 
-        let tabsToClose = tabGroup.windows.enumerated().filter { $0.offset > currentIndex }
+    private func closeTabsOnTheRightImmediately() {
+        let tabsToClose = tabsOnTheRightToClose
         guard !tabsToClose.isEmpty else { return }
 
         undoManager?.beginUndoGrouping()
@@ -816,7 +929,7 @@ class TerminalController: BaseTerminalController, TabGroupCloseCoordinator.Contr
             undoManager?.endUndoGrouping()
         }
 
-        for (_, candidate) in tabsToClose {
+        for candidate in tabsToClose {
             if let controller = candidate.windowController as? TerminalController {
                 controller.closeTabImmediately(registerRedo: false)
             }
@@ -1027,6 +1140,7 @@ class TerminalController: BaseTerminalController, TabGroupCloseCoordinator.Contr
         let tabIndex: Int?
         weak var tabGroup: NSWindowTabGroup?
         let tabColor: TerminalTabColor
+        let isPinned: Bool
     }
 
     convenience init(_ ghostty: Ghostty.App, with undoState: UndoState) {
@@ -1038,6 +1152,7 @@ class TerminalController: BaseTerminalController, TabGroupCloseCoordinator.Contr
             window.setFrame(undoState.frame, display: true)
             if let terminalWindow = window as? TerminalWindow {
                 terminalWindow.tabColor = undoState.tabColor
+                terminalWindow.isPinned = undoState.isPinned
             }
 
             // If we have a tab group and index, restore the tab to its original position
@@ -1082,7 +1197,8 @@ class TerminalController: BaseTerminalController, TabGroupCloseCoordinator.Contr
             focusedSurface: focusedSurface?.id,
             tabIndex: window.tabGroup?.windows.firstIndex(of: window),
             tabGroup: window.tabGroup,
-            tabColor: (window as? TerminalWindow)?.tabColor ?? .none)
+            tabColor: (window as? TerminalWindow)?.tabColor ?? .none,
+            isPinned: (window as? TerminalWindow)?.isPinned ?? false)
     }
 
     // MARK: - NSWindowController
@@ -1328,31 +1444,37 @@ class TerminalController: BaseTerminalController, TabGroupCloseCoordinator.Contr
             return
         }
 
-        guard surfaceTree.contains(where: { $0.needsConfirmQuit }) else {
+        // Pinned tabs always require confirmation to close.
+        let needsConfirmQuit = surfaceTree.contains(where: { $0.needsConfirmQuit })
+        guard needsConfirmQuit || isPinned else {
             closeTabImmediately()
             return
         }
 
-        confirmClose(
-            messageText: "Close Tab?",
-            informativeText: "The terminal still has a running process. If you close the tab the process will be killed."
-        ) {
+        let messageText: String
+        let informativeText: String
+        if isPinned {
+            messageText = "Close Pinned Tab?"
+            informativeText = needsConfirmQuit
+                ? "This tab is pinned and the terminal still has a running process. If you close the tab the process will be killed."
+                : "This tab is pinned. Are you sure you want to close it?"
+        } else {
+            messageText = "Close Tab?"
+            informativeText = "The terminal still has a running process. If you close the tab the process will be killed."
+        }
+
+        confirmClose(messageText: messageText, informativeText: informativeText) {
             self.closeTabImmediately()
         }
     }
 
     @IBAction func closeOtherTabs(_ sender: Any?) {
-        guard let window = window else { return }
-        guard let tabGroup = window.tabGroup else { return }
-
-        // If we only have one window then we have no other tabs to close
-        guard tabGroup.windows.count > 1 else { return }
+        // If there are no other unpinned tabs then there is nothing to close
+        let tabsToClose = otherTabsToClose
+        guard !tabsToClose.isEmpty else { return }
 
         // Check if we have to confirm close.
-        guard tabGroup.windows.contains(where: { window in
-            // Ignore ourself
-            if window == self.window { return false }
-
+        guard tabsToClose.contains(where: { window in
             // Ignore non-terminals
             guard let controller = window.windowController as? TerminalController else {
                 return false
@@ -1374,14 +1496,10 @@ class TerminalController: BaseTerminalController, TabGroupCloseCoordinator.Contr
     }
 
     @IBAction func closeTabsOnTheRight(_ sender: Any?) {
-        guard let window = window else { return }
-        guard let tabGroup = window.tabGroup else { return }
-        guard let currentIndex = tabGroup.windows.firstIndex(of: window) else { return }
-
-        let tabsToClose = tabGroup.windows.enumerated().filter { $0.offset > currentIndex }
+        let tabsToClose = tabsOnTheRightToClose
         guard !tabsToClose.isEmpty else { return }
 
-        let needsConfirm = tabsToClose.contains { (_, candidate) in
+        let needsConfirm = tabsToClose.contains { candidate in
             guard let controller = candidate.windowController as? TerminalController else {
                 return false
             }
@@ -1561,14 +1679,15 @@ class TerminalController: BaseTerminalController, TabGroupCloseCoordinator.Contr
         guard tabbedWindows.count > 0 else { return }
         guard let selectedIndex = tabbedWindows.firstIndex(where: { $0 == selectedWindow }) else { return }
 
+        // Pinned tabs can only move among pinned tabs and unpinned tabs among
+        // unpinned tabs, so determine the bounds of our section.
         // Determine the final index we want to insert our tab
-        let finalIndex: Int
-        if action.amount < 0 {
-            finalIndex = selectedIndex - min(selectedIndex, -action.amount)
-        } else {
-            let remaining: Int = tabbedWindows.count - 1 - selectedIndex
-            finalIndex = selectedIndex + min(remaining, action.amount)
-        }
+        let finalIndex = PinnedTabs.moveTarget(
+            selectedIndex: selectedIndex,
+            amount: action.amount,
+            count: tabbedWindows.count,
+            pinnedCount: tabbedWindows.filter { ($0 as? TerminalWindow)?.isPinned ?? false }.count,
+            selectedIsPinned: (selectedWindow as? TerminalWindow)?.isPinned ?? false)
 
         // If our index is the same we do nothing
         guard finalIndex != selectedIndex else { return }
@@ -1749,9 +1868,15 @@ extension TerminalController {
     override func validateMenuItem(_ item: NSMenuItem) -> Bool {
         switch item.action {
         case #selector(closeTabsOnTheRight):
-            guard let window, let tabGroup = window.tabGroup else { return false }
-            guard let currentIndex = tabGroup.windows.firstIndex(of: window) else { return false }
-            return tabGroup.windows.indices.contains { $0 > currentIndex }
+            return !tabsOnTheRightToClose.isEmpty
+
+        case #selector(closeOtherTabs):
+            return !otherTabsToClose.isEmpty
+
+        case #selector(togglePinTab):
+            guard window is TerminalWindow else { return false }
+            item.title = isPinned ? "Unpin Tab" : "Pin Tab"
+            return true
 
         case #selector(returnToDefaultSize):
             guard let window else { return false }

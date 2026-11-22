@@ -798,6 +798,7 @@ pub const Application = extern struct {
             .toggle_fullscreen => Action.toggleFullscreen(target),
             .toggle_quick_terminal => return Action.toggleQuickTerminal(self),
             .toggle_tab_overview => return Action.toggleTabOverview(target),
+            .toggle_tab_pin => return Action.toggleTabPin(target),
             .toggle_window_decorations => return Action.toggleWindowDecorations(target),
             .toggle_command_palette => return Action.toggleCommandPalette(target),
             .toggle_split_zoom => return Action.toggleSplitZoom(target),
@@ -3209,6 +3210,24 @@ const Action = struct {
 
                 window.toggleTabOverview();
                 return true;
+            },
+        }
+    }
+
+    pub fn toggleTabPin(target: apprt.Target) bool {
+        switch (target) {
+            .app => return false,
+            .surface => |core| {
+                const surface = core.rt_surface.surface;
+                const window = ext.getAncestor(
+                    Window,
+                    surface.as(gtk.Widget),
+                ) orelse {
+                    log.warn("surface is not in a window, ignoring toggle_tab_pin", .{});
+                    return false;
+                };
+
+                return window.toggleTabPin(surface);
             },
         }
     }

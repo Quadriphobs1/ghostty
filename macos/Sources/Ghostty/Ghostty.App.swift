@@ -609,6 +609,9 @@ extension Ghostty {
             case GHOSTTY_ACTION_MOVE_TAB_TO_NEW_WINDOW:
                 return moveTabToNewWindow(app, target: target)
 
+            case GHOSTTY_ACTION_TOGGLE_TAB_PIN:
+                return toggleTabPin(app, target: target)
+
             case GHOSTTY_ACTION_GOTO_TAB:
                 return gotoTab(app, target: target, tab: action.action.goto_tab)
 
@@ -1298,6 +1301,30 @@ extension Ghostty {
                     guard (surfaceView.window?.tabGroup?.windows.count ?? 0) > 1 else { return false }
 
                     surfaceView.window?.moveTabToNewWindow(nil)
+
+                default:
+                    assertionFailure()
+                }
+
+                return true
+        }
+
+        private static func toggleTabPin(
+            _ app: ghostty_app_t,
+            target: ghostty_target_s) -> Bool {
+                switch target.tag {
+                case GHOSTTY_TARGET_APP:
+                    Ghostty.logger.warning("toggle tab pin does nothing with an app target")
+                    return false
+
+                case GHOSTTY_TARGET_SURFACE:
+                    guard let surface = target.target.surface else { return false }
+                    guard let surfaceView = self.surfaceView(from: surface) else { return false }
+
+                    // Only regular terminal windows have tabs that can be pinned
+                    // (e.g. not the quick terminal).
+                    guard let window = surfaceView.window as? TerminalWindow else { return false }
+                    window.isPinned.toggle()
 
                 default:
                     assertionFailure()
